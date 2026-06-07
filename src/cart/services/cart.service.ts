@@ -1,62 +1,180 @@
 import { Injectable } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
 import { Cart, CartStatuses } from '../models';
 import { PutCartPayload } from 'src/order/type';
+import { DatabaseService } from '../../database/services/database.service';
 
 @Injectable()
 export class CartService {
-  private userCarts: Record<string, Cart> = {};
+  constructor(private db: DatabaseService) {}
 
-  findByUserId(userId: string): Cart {
-    return this.userCarts[userId];
+  async findByUserId(userId: string): Promise<Cart | null> {
+    const cartResult = await this.db.query<{
+      id: string;
+      user_id: string;
+      created_at: Date;
+      updated_at: Date;
+      status: CartStatuses;
+    }>(
+      `
+      SELECT * FROM carts
+      WHERE user_id = $1::uuid
+        AND status = 'OPEN'
+      LIMIT 1
+    `,
+      [userId],
+    );
+
+    const cart = cartResult.rows[0];
+
+    if (!cart) {
+      return null;
+    }
+
+    const itemsResult = await this.db.query<any>(
+      `
+      SELECT *
+      FROM cart_items
+      WHERE cart_id = $1::uuid
+    `,
+      [cart.id],
+    );
+
+    return {
+      ...cart,
+      created_at: cart.created_at.getTime(),
+      updated_at: cart.updated_at.getTime(),
+      items: itemsResult.rows.map((item) => ({
+        product: {
+          id: item.product_id,
+          title: '',
+          description: '',
+          price: Number(item.price),
+        },
+        count: item.count,
+      })),
+    };
   }
 
-  createByUserId(user_id: string): Cart {
-    const timestamp = Date.now();
+  async createByUserId(userId: string): Promise<Cart> {
+    const result = await this.db.query<{
+      id: string;
+      user_id: string;
+      created_at: Date;
+      updated_at: Date;
+      status: CartStatuses;
+    }>(
+      `
+      INSERT INTO carts (id, user_id, created_at, updated_at, status)
+      VALUES (
+        uuid_generate_v4(),
+        $1::uuid,
+        NOW(),
+        NOW(),
+        'OPEN'
+      )
+      RETURNING *
+    `,
+      [userId],
+    );
 
-    const userCart = {
-      id: randomUUID(),
-      user_id,
-      created_at: timestamp,
-      updated_at: timestamp,
-      status: CartStatuses.OPEN,
+    const cart = result.rows[0];
+    return {
+      id: cart.id,
+      user_id: cart.user_id,
+      created_at: cart.created_at.getTime(),
+      updated_at: cart.updated_at.getTime(),
+      status: cart.status,
       items: [],
     };
-
-    this.userCarts[user_id] = userCart;
-
-    return userCart;
   }
 
-  findOrCreateByUserId(userId: string): Cart {
-    const userCart = this.findByUserId(userId);
+  async findOrCreateByUserId(userId: string): Promise<Cart> {
+    const cart = await this.findByUserId(userId);
 
-    if (userCart) {
-      return userCart;
+    if (cart) {
+      return cart;
     }
 
     return this.createByUserId(userId);
   }
 
-  updateByUserId(userId: string, payload: PutCartPayload): Cart {
-    const userCart = this.findOrCreateByUserId(userId);
+  async updateByUserId(userId: string, payload: PutCartPayload): Promise<Cart> {
+    const cart = await this.findOrCreateByUserId(userId);
 
-    const index = userCart.items.findIndex(
-      ({ product }) => product.id === payload.product.id,
+    const existingItem = await this.db.query(
+      `
+      SELECT 1
+      FROM cart_items
+      WHERE cart_id = $1::uuid
+        AND product_id = $2::uuid
+    `,
+      [cart.id, payload.product.id],
     );
 
-    if (index === -1) {
-      userCart.items.push(payload);
-    } else if (payload.count === 0) {
-      userCart.items.splice(index, 1);
+    if (payload.count === 0) {
+      await this.db.query(
+        `
+        DELETE FROM cart_items
+        WHERE cart_id = $1::uuid
+          AND product_id = $2::uuid
+      `,
+        [cart.id, payload.product.id],
+      );
+    } else if (existingItem.rowCount) {
+      await this.db.query(
+        `
+        UPDATE cart_items
+        SET 
+          count = $3
+          price = $4
+        WHERE cart_id = $1::uuid
+          AND product_id = $2::uuid
+      `,
+        [cart.id, payload.product.id, payload.count, payload.product.price],
+      );
     } else {
-      userCart.items[index] = payload;
+      await this.db.query(
+        `
+        INSERT INTO cart_items (
+          cart_id,
+          product_id,
+          count,
+          price
+        )
+        VALUES (
+          $1::uuid,
+          $2::uuid,
+          $3,
+          $4
+        )
+      `,
+        [cart.id, payload.product.id, payload.count, payload.product.price],
+      );
     }
 
-    return userCart;
+    const updatedCart = await this.findByUserId(userId);
+
+    if (!updatedCart) {
+      throw new Error('Cart not found after update');
+    }
+
+    return updatedCart;
   }
 
-  removeByUserId(userId): void {
-    this.userCarts[userId] = null;
+  async removeByUserId(userId: string): Promise<void> {
+    const cart = await this.findByUserId(userId);
+
+    if (!cart) {
+      return;
+    }
+
+    await this.db.query(
+      `
+        DELETE FROM cart_items WHERE cart_id = (
+          SELECT id FROM carts WHERE user_id = $1 AND status = 'OPEN' LIMIT 1
+        )
+      `,
+      [userId],
+    );
   }
 }

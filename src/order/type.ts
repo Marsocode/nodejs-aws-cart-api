@@ -40,3 +40,8 @@ export type CreateOrderPayload = {
   address: Address;
   total: number;
 };
+
+export type PutOrderPayload = {
+  status: OrderStatus;
+  comment?: string;
+};

@@ -1,0 +1,33 @@
+# IDE/system files are not needed.
+.idea
+.vscode
+.DS_Store
+
+# Dependencies will be installed inside container
+node_modules
+
+# Compiled app output, will be recreated inside the container
+dist
+
+# Cdk infastructure is not needed in runtime
+cdk
+
+# Version control history is not needed inside the container
+.git
+.gitignore
+
+# Test files and Test coverage data are not needed inside the container
+test
+coverage
+
+# EB CLI config
+.elasticbeanstalk
+
+# example env file, real env file is injected at runtime
+.env.example
+
+# get-token.sh used for local development
+get-token.sh
+
+# Documentation files is not needed in container
+*.md

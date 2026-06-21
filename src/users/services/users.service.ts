@@ -1,30 +1,27 @@
 import { Injectable } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
 import { User } from '../models';
+import { DatabaseService } from '../../database/services/database.service';
 
 @Injectable()
 export class UsersService {
-  private readonly users: Record<string, User>;
+  constructor(private db: DatabaseService) {}
 
-  constructor() {
-    this.users = {};
+  async findOne(name: string): Promise<User | null> {
+    const result = await this.db.query<any>(
+      `SELECT * 
+        FROM users 
+        WHERE name = $1 LIMIT 1`,
+      [name],
+    );
+    return result.rows[0] ?? null;
   }
 
-  findOne(name: string): User {
-    for (const id in this.users) {
-      if (this.users[id].name === name) {
-        return this.users[id];
-      }
-    }
-    return;
-  }
-
-  createOne({ name, password }: User): User {
-    const id = randomUUID();
-    const newUser = { id, name, password };
-
-    this.users[id] = newUser;
-
-    return newUser;
+  async createOne({ name, password }: User): Promise<User> {
+    const result = await this.db.query<any>(
+      `INSERT INTO users (name, password) 
+       VALUES ($1, $2) RETURNING *`,
+      [name, password],
+    );
+    return result.rows[0];
   }
 }

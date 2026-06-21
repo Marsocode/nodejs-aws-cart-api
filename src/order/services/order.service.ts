@@ -1,50 +1,135 @@
 import { Injectable } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
 import { Order } from '../models';
-import { CreateOrderPayload, OrderStatus } from '../type';
+import { CreateOrderPayload, OrderStatus, PutOrderPayload } from '../type';
+import { DatabaseService } from '../../database/services/database.service';
 
 @Injectable()
 export class OrderService {
-  private orders: Record<string, Order> = {};
+  constructor(private db: DatabaseService) {}
 
-  getAll() {
-    return Object.values(this.orders);
+  async getAll(): Promise<Order[]> {
+    const result = await this.db.query<Order>(
+      `
+        SELECT *
+        FROM orders
+        ORDER BY id
+      `,
+    );
+
+    return result.rows.map((row: any) => this.mapRowToOrder(row));
   }
 
-  findById(orderId: string): Order {
-    return this.orders[orderId];
+  async findById(orderId: string): Promise<Order | null> {
+    const result = await this.db.query<Order>(
+      `
+        SELECT *
+        FROM orders
+        WHERE id = $1::uuid
+      `,
+      [orderId],
+    );
+
+    const row = result.rows[0];
+
+    return row ? this.mapRowToOrder(row) : null;
   }
 
-  create(data: CreateOrderPayload) {
-    const id = randomUUID() as string;
-    const order: Order = {
-      id,
-      ...data,
+  async create(data: CreateOrderPayload): Promise<Order> {
+    const result = await this.db.query<any>(
+      `
+       INSERT INTO orders (user_id, cart_id, delivery, status, total)
+       VALUES ($1, $2, $3, $4, $5) 
+       RETURNING *
+      `,
+      [
+        data.userId,
+        data.cartId,
+        JSON.stringify(data.address),
+        OrderStatus.Open,
+        data.total,
+      ],
+    );
+
+    const row = result.rows[0];
+
+    return this.mapRowToOrder(row, data.items);
+  }
+
+  async createWithTransaction(data: CreateOrderPayload): Promise<Order> {
+    const client = await this.db.connect();
+    try {
+      await client.query('BEGIN');
+
+      const { rows: orderRows } = await client.query(
+        `
+         INSERT INTO orders (user_id, cart_id, delivery, status, total)
+         VALUES ($1, $2, $3, $4, $5) 
+         RETURNING *
+        `,
+        [
+          data.userId,
+          data.cartId,
+          JSON.stringify(data.address),
+          OrderStatus.Open,
+          data.total,
+        ],
+      );
+
+      await client.query(
+        `
+         UPDATE carts 
+         SET 
+            status = 'ORDERED', 
+            updated_at = NOW() 
+         WHERE id = $1
+        `,
+        [data.cartId],
+      );
+
+      await client.query('COMMIT');
+
+      return this.mapRowToOrder(orderRows[0], data.items);
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+
+  async update(orderId: string, data: PutOrderPayload): Promise<Order | null> {
+    const status = data.status ?? OrderStatus.Open;
+    await this.db.query(
+      `
+      UPDATE orders
+      SET
+        status = $2,
+        comments = COALESCE($3::text, comments)
+      WHERE id = $1::uuid 
+    `,
+      [orderId, status, data.comment ?? null],
+    );
+
+    return this.findById(orderId);
+  }
+
+  private mapRowToOrder(
+    row: any,
+    items?: Array<{ productId: string; count: number }>,
+  ): Order {
+    return {
+      id: row.id,
+      userId: row.user_id,
+      cartId: row.cart_id,
+      address: row.delivery ?? {},
+      items: items ?? [],
       statusHistory: [
         {
-          comment: '',
-          status: OrderStatus.Open,
+          status: row.status ?? OrderStatus.Open,
           timestamp: Date.now(),
+          comment: row.comment || row.comments || '',
         },
       ],
-    };
-
-    this.orders[id] = order;
-
-    return order;
-  }
-
-  // TODO add  type
-  update(orderId: string, data: Order) {
-    const order = this.findById(orderId);
-
-    if (!order) {
-      throw new Error('Order does not exist.');
-    }
-
-    this.orders[orderId] = {
-      ...data,
-      id: orderId,
     };
   }
 }

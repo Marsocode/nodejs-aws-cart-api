@@ -2,7 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { UsersService } from '../users/services/users.service';
 import { User } from '../users/models';
-// import { contentSecurityPolicy } from 'helmet';
+
 type TokenResponse = {
   token_type: string;
   access_token: string;
@@ -15,19 +15,19 @@ export class AuthService {
     private jwtService: JwtService,
   ) {}
 
-  register(payload: User) {
-    const user = this.usersService.findOne(payload.name);
+  async register(payload: User) {
+    const user = await this.usersService.findOne(payload.name);
 
     if (user) {
       throw new BadRequestException('User with such name already exists');
     }
 
-    const { id: userId } = this.usersService.createOne(payload);
+    const { id: userId } = await this.usersService.createOne(payload);
     return { userId };
   }
 
-  validateUser(name: string, password: string): User {
-    const user = this.usersService.findOne(name);
+  async validateUser(name: string, password: string): Promise<User> {
+    const user = await this.usersService.findOne(name);
 
     if (user) {
       return user;
